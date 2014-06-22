@@ -29,7 +29,7 @@ CamShift::CamShift(void)
 		program.build(devices);
 
 		this->testKernel = cl::Kernel(program, "test");
-		this->RGBAtoRGKernel = cl::Kernel(program, "RGBAtoRG");
+		this->RGBAtoRGKernel = cl::Kernel(program, "RGBAtoRxG16_4");
 		this->queue = cl::CommandQueue(context, devices[0], CL_QUEUE_PROFILING_ENABLE);
 
 		this->trackRect = cv::Rect(0, 0, TRACK_RECT_W, TRACK_RECT_H);
@@ -79,50 +79,60 @@ void CamShift::drawTrackRect(cv::Mat& mat)
 void CamShift::startTracking(cv::Mat& mat)
 {
 	this->tracking = true;
+	getTrackedObjHist(mat);
+}
 
+void CamShift::getTrackedObjHist(cv::Mat& mat)
+{
 	int w = mat.cols;
 	int h = mat.rows;
-	
+
+	// ZMIANA BGR -> RGBA
 	uchar* dataRGBA = new uchar[mat.total()*4];
 	cv::Mat matRGBA(mat.size(), CV_8UC4, dataRGBA);
 	cv::cvtColor(mat, matRGBA, CV_BGR2RGBA, 4);
 
+	// ZMIANA RGBA -> RG
 	int size_rgba_bytes = w*h*sizeof(cl_uchar4);
-	int size_rg_bytes = w*h*sizeof(cl_uchar2);
+	int size_rg_bytes = w*h*sizeof(cl_uchar);
 
 	cl::Buffer in(context, CL_MEM_READ_ONLY, size_rgba_bytes);
 	cl::Buffer out(context, CL_MEM_WRITE_ONLY, size_rg_bytes);
 
 	queue.enqueueWriteBuffer(in, CL_TRUE, 0, size_rgba_bytes, matRGBA.data);
 
-	cl::NDRange global(w/4, h);
+	// Szerokoœæ zmniejszamy o 4 bo kernel analizuje po 4 jednoczeœnie
+	// Liczba pikseli musi byæ podzielna przez 4, no ale ka¿da szanuj¹ca siê
+	// rozdzielczoœæ spe³nia ten warunek.
+	const int w4 = w / 4;
+	cl::NDRange global(w4, h);
 	cl::NDRange local = cl::NullRange;
 	cl::NDRange offset = cl::NDRange(0, 0);
 
-	this->RGBAtoRGKernel.setArg(0, sizeof(cl_uchar16 *), &in);
-	this->RGBAtoRGKernel.setArg(1, sizeof(cl_uchar8 *), &out);
-	this->RGBAtoRGKernel.setArg(2, w/4);
+	this->RGBAtoRGKernel.setArg(0, sizeof(cl_uint4 *), &in);
+	this->RGBAtoRGKernel.setArg(1, sizeof(cl_uchar4 *), &out);
 
 	queue.enqueueNDRangeKernel(this->RGBAtoRGKernel, offset, global, local);
 	queue.finish();
-
+	
+#ifndef __CS_DEBUG_OFF__
 	uchar* dataRG = new uchar[size_rg_bytes];
 	queue.enqueueReadBuffer(out, CL_TRUE, 0, size_rg_bytes, dataRG);
-	
-	// Check
 	for(int i = 0; i < 50; i++)
 	{
-		std::cout << i << "\t R:" << int(dataRG[i*2]) << "\t G:" << int(dataRG[i*2+1]) << "\n";
-		std::cout << i << "\t R:" << int(dataRGBA[i*4]) << "\t G:" << int(dataRGBA[(i*4)+1])
+		std::cout << i << "\t Hist idx (RxG): " << int(dataRG[i]) << "\n";
+		std::cout << i << "RGBA: \t R:" << int(dataRGBA[i*4]) << "\t G:" << int(dataRGBA[(i*4)+1])
 			<< "\t B:" << int(dataRGBA[(i*4)+2]) << "\t A:" << int(dataRGBA[(i*4)+3]) << "\n";
+		std::cout << i << "BGR: \t R:" << int(mat.data[(i*3)+2]) << "\t G:" << int(mat.data[(i*3)+1])
+			<< "\t B:" << int(mat.data[(i*3)]) << "\n";
 	}
-
+#endif
 }
 
 void CamShift::process(cv::Mat& mat)
 {
 	try {
-		
+
 		int w = mat.cols;
 		int h = mat.rows;
 		uchar * image = mat.data;
@@ -152,7 +162,7 @@ void CamShift::process(cv::Mat& mat)
 		queue.enqueueReadBuffer(out, CL_TRUE, offsetFlat, size-offsetFlat, image+offsetFlat);
 
 		drawTrackRect(mat);
-		
+
 	} catch(...)
 	{
 		std::rethrow_exception(std::current_exception());

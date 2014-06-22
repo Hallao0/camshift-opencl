@@ -24,8 +24,7 @@ int main() {
 		if (!stream.isOpened()) {
 			cout << "Cannot open camera.";
 		}
-
-
+		
 		//TODO: przeniesienie ca³ego sterowania CamShiftem do oddzielnej klasy/namepspace, mo¿e do samego CamShift
 		// ¿eby tylko daæ camshitf.start() i dzia³a.
 
@@ -36,18 +35,6 @@ int main() {
 		std::cout << cameraFrame.size() << std::endl;		
 		std::cout << "w:" << cameraFrame.cols << std::endl;
 		std::cout << "h:" <<  cameraFrame.rows << std::endl;
-
-		//uchar* camData = new uchar[cameraFrame.total()*4];
-		//uchar* camData2 = new uchar[cameraFrame.total()*3];
-		//Mat continuousRGBA(cameraFrame.size(), CV_8UC4, camData);
-		//Mat continuousBGR(cameraFrame.size(), CV_8UC3, camData2);
-		//while(cvWaitKey(33) != 27)
-		//{
-		//	stream >> cameraFrame;	
-		//	cv::cvtColor(cameraFrame, continuousRGBA, CV_BGR2RG, 4);
-		//	cv::cvtColor(continuousRGBA, continuousBGR, CV_RGBA2BGR, 3);
-		//	imshow("main", continuousBGR);
-		//}
 
 		while(cvWaitKey(33) != 32)
 		{

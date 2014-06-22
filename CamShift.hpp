@@ -11,6 +11,7 @@
 #include <exception>
 #include <iostream>
 #include <fstream>
+#include <array>
 
 #include "common.hpp"
 
@@ -37,7 +38,8 @@ class CamShift
 
 	/** True if object is being tracked; false otherwise*/
 	bool tracking;
-
+	std::array<cl_uint, 256> trackedObjHist;
+	
 public:
 	CamShift(void);
 	~CamShift(void);
@@ -47,6 +49,7 @@ public:
 	void process(cv::Mat& mat);
 
 private:
+	void getTrackedObjHist(cv::Mat& mat);
 	cv::Point meanShift(cv::Mat& mat);
 	void clean();
 };
