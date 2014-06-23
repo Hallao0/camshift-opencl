@@ -18,6 +18,8 @@
 #define TRACK_RECT_W 256
 #define TRACK_RECT_H 192
 
+#define HISTOGRAM_LEVELS 256
+
 class CamShift
 {
 	/** OpenCL: Start */		
@@ -28,7 +30,8 @@ class CamShift
 	cl::Program program;
 
 	cl::Kernel testKernel;
-	cl::Kernel RGBAtoRGKernel;
+	cl::Kernel kernelRGBA2RG_HIST_IDX_4;
+	cl::Kernel kernelHistRG;
 	cl::CommandQueue queue;
 	/** OpenCL: End*/
 	

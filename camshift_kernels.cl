@@ -1,3 +1,4 @@
+
 __kernel void test(
 	__global uchar * src,
 	__global uchar * dst,
@@ -32,9 +33,7 @@ __kernel void RGBAtoRG_4(
 
 #define MASK_RIGHT_MOST_BYTE (uint4)(255)
 
-//TODO: Lepsze nazewnictwo kernela
-
-__kernel void RGBAtoRxG16_4(
+__kernel void RGBA2RG_HIST_IDX_4(
 	__global uint4 * src,
 	__global uchar4 * dst)
 {    	
@@ -61,15 +60,18 @@ __kernel void RGBAtoRxG16_4(
 	dst[idx] = convert_uchar4_sat(rg_4/(uint4)(17));
 }
 
+#pragma OPENCL EXTENSION cl_khr_local_int32_base_atomics : enable
+
 // 256 kube³ków (16x16)
 #define HIST_BINS 256
-
 // Ile banków pamiêci u¿ywamy
 // Ze wzglêdu na to, ¿e SIMD wykonuje jednoczeœnie æwieræ wavefrontu (16 workitemów)
 // i bêdziemy u¿ywaæ operacji atomowy optymalnie wychodzi 16 chocia¿ jest 32.
 #define NBANKS 16
+#define BITS_PER_VALUE 8
 
-__kernel void histRG(
+__kernel __attribute__((reqd_work_group_size(HIST_BINS,1,1)))
+void histRG(
 	__global uint4 * srcRG,
 	__global uint * globalHistRG,
 	uint n4VectorsPerWorkItem)
@@ -80,5 +82,70 @@ __kernel void histRG(
 	uint lid = get_local_id(0);
 	uint Stride = get_global_size(0);
 	
+	const uint shift = BITS_PER_VALUE;
+	const uint offset = lid % (uint)(NBANKS);
 	uint4 tmp1, tmp2;	 
+	
+	// ZERUJE __local subhists
+    uint localItemsPerWorkItem = NBANKS * HIST_BINS / get_local_size(0);
+	uint localWorkItems = get_local_size(0);
+	// Zerujemy po 4 jednoczesnie, bedzie szybciej i tak siegamy od innych banków
+	__local uint4 *p = (__local uint4 *) subhists; 
+    if( lid < localWorkItems )
+    {
+       for(uint i=0, idx=lid; i<localItemsPerWorkItem/4; i++, idx+=localWorkItems)
+       {
+          p[idx] = 0;
+       }
+    }
+	barrier( CLK_LOCAL_MEM_FENCE );
+
+	// Przegl¹dam "obrazek" i wype³niam lokalny histogram
+	for(uint i=0, idx=gid; i<n4VectorsPerWorkItem; i++, idx += Stride )
+    {
+       tmp1 = srcRG[idx];
+       tmp2 = (tmp1 & MASK_RIGHT_MOST_BYTE) * (uint4) NBANKS + offset;
+
+       (void) atom_inc( subhists + tmp2.x );
+       (void) atom_inc( subhists + tmp2.y );
+       (void) atom_inc( subhists + tmp2.z );
+       (void) atom_inc( subhists + tmp2.w );
+
+       tmp1 = tmp1 >> shift;
+       tmp2 = (tmp1 & MASK_RIGHT_MOST_BYTE) * (uint4) NBANKS + offset;
+
+       (void) atom_inc( subhists + tmp2.x );
+       (void) atom_inc( subhists + tmp2.y );
+       (void) atom_inc( subhists + tmp2.z );
+       (void) atom_inc( subhists + tmp2.w );
+
+       tmp1 = tmp1 >> shift;
+       tmp2 = (tmp1 & MASK_RIGHT_MOST_BYTE) * (uint4) NBANKS + offset;
+       
+       (void) atom_inc( subhists + tmp2.x );
+       (void) atom_inc( subhists + tmp2.y );
+       (void) atom_inc( subhists + tmp2.z );
+       (void) atom_inc( subhists + tmp2.w );
+
+       tmp1 = tmp1 >> shift;
+       tmp2 = (tmp1 & MASK_RIGHT_MOST_BYTE) * (uint4) NBANKS + offset;
+       
+       (void) atom_inc( subhists + tmp2.x );
+       (void) atom_inc( subhists + tmp2.y );
+       (void) atom_inc( subhists + tmp2.z );
+       (void) atom_inc( subhists + tmp2.w );
+    }
+    barrier( CLK_LOCAL_MEM_FENCE );
+	
+	// Sumuje 16 lokalnych histogramów w jeden histogram dla ca³ej workGroup
+	// Sumuje tak, ze ka¿dy z 256 w¹tków sumuje po jednym "kube³ku"(?) histogramu
+	for(uint binIdx = lid; binIdx < HIST_BINS; binIdx += localWorkItems)
+	{
+		uint bin = 0;
+		for( uint i = 0; i < NBANKS; i++)
+		{
+			bin += subhists[(lid*NBANKS) + ((i+lid) % NBANKS)];
+		}
+		globalHistRG[(get_group_id(0) * HIST_BINS) + binIdx] = bin;
+	}	 
 }

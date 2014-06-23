@@ -49,7 +49,7 @@ int main() {
 			stream >> cameraFrame;	
 			camshift.process(cameraFrame);
 			imshow("main", cameraFrame);
-		}	
+		}
 
 		cvDestroyAllWindows();
 		return EXIT_SUCCESS;

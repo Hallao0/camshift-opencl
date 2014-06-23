@@ -29,7 +29,8 @@ CamShift::CamShift(void)
 		program.build(devices);
 
 		this->testKernel = cl::Kernel(program, "test");
-		this->RGBAtoRGKernel = cl::Kernel(program, "RGBAtoRxG16_4");
+		this->kernelRGBA2RG_HIST_IDX_4= cl::Kernel(program, "RGBA2RG_HIST_IDX_4");
+		this->kernelHistRG = cl::Kernel(program, "histRG");
 		this->queue = cl::CommandQueue(context, devices[0], CL_QUEUE_PROFILING_ENABLE);
 
 		this->trackRect = cv::Rect(0, 0, TRACK_RECT_W, TRACK_RECT_H);
@@ -39,6 +40,7 @@ CamShift::CamShift(void)
 
 	} catch(cl::Error &e)
 	{		         	
+#ifndef __CS_DEBUG_OFF__
 		if(e.err() == CL_BUILD_PROGRAM_FAILURE)
 		{
 			std::vector<cl::Device> devices;
@@ -50,6 +52,7 @@ CamShift::CamShift(void)
 			std::cout << "Build Log:\t " << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(devices[0]) << std::endl;
 			std::cout << " ************************************************\n";
 		}
+#endif
 		std::rethrow_exception(std::current_exception());
 	} catch(...)
 	{		         	
@@ -97,7 +100,7 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	int size_rg_bytes = w*h*sizeof(cl_uchar);
 
 	cl::Buffer in(context, CL_MEM_READ_ONLY, size_rgba_bytes);
-	cl::Buffer out(context, CL_MEM_WRITE_ONLY, size_rg_bytes);
+	cl::Buffer out(context, CL_MEM_READ_WRITE, size_rg_bytes);
 
 	queue.enqueueWriteBuffer(in, CL_TRUE, 0, size_rgba_bytes, matRGBA.data);
 
@@ -109,22 +112,97 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	cl::NDRange local = cl::NullRange;
 	cl::NDRange offset = cl::NDRange(0, 0);
 
-	this->RGBAtoRGKernel.setArg(0, sizeof(cl_uint4 *), &in);
-	this->RGBAtoRGKernel.setArg(1, sizeof(cl_uchar4 *), &out);
+	this->kernelRGBA2RG_HIST_IDX_4.setArg(0, sizeof(cl_uint4 *), &in);
+	this->kernelRGBA2RG_HIST_IDX_4.setArg(1, sizeof(cl_uchar4 *), &out);
 
-	queue.enqueueNDRangeKernel(this->RGBAtoRGKernel, offset, global, local);
+	queue.enqueueNDRangeKernel(this->kernelRGBA2RG_HIST_IDX_4, offset, global, local);
 	queue.finish();
-	
+
 #ifndef __CS_DEBUG_OFF__
+
 	uchar* dataRG = new uchar[size_rg_bytes];
 	queue.enqueueReadBuffer(out, CL_TRUE, 0, size_rg_bytes, dataRG);
-	for(int i = 0; i < 50; i++)
+	// Wypisuje 10 pierwszych wyników przekszta³cenia BGR -> RGBA -> R+16*G(indeks na histogramie 16x16 RxG)
+	// dla rêcznego sprawdzenia poprawnoœci obliczeñ
+	for(int i = 0; i < 10; i++)
 	{
 		std::cout << i << "\t Hist idx (RxG): " << int(dataRG[i]) << "\n";
 		std::cout << i << "RGBA: \t R:" << int(dataRGBA[i*4]) << "\t G:" << int(dataRGBA[(i*4)+1])
 			<< "\t B:" << int(dataRGBA[(i*4)+2]) << "\t A:" << int(dataRGBA[(i*4)+3]) << "\n";
 		std::cout << i << "BGR: \t R:" << int(mat.data[(i*3)+2]) << "\t G:" << int(mat.data[(i*3)+1])
 			<< "\t B:" << int(mat.data[(i*3)]) << "\n";
+	}
+	int histCPU[HISTOGRAM_LEVELS];
+	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
+	{
+		histCPU[i]=0;
+	}
+	for(int i = 0; i < w*h; i++)
+	{
+		histCPU[int(dataRG[i])]++;
+	}
+
+#endif
+
+	const int workGroupSize = HISTOGRAM_LEVELS;
+	const int n4VectorsPerWorkItem = 1;
+	// Rozmiar pix to jeden bajt
+	// Wczytujemy jednoczeœnie 4 int'y, zatem 16 bajtów
+	const int n4Vectors = w * h / 16;
+	// rozmiar: liczba wektorów uint4 przez liczbe wektorów na workItem
+	const int globalSize = n4Vectors/n4VectorsPerWorkItem;
+	const int nWorkGroups = (globalSize / workGroupSize);
+
+	// Globalnie: jeden wymiar, 
+	global =  cl::NDRange(globalSize);
+	local = cl::NDRange(workGroupSize);
+	const int size_global_rg_hist_bytes = nWorkGroups * HISTOGRAM_LEVELS * sizeof(cl_uint);
+	cl::Buffer globalHist(context, CL_MEM_READ_WRITE, size_global_rg_hist_bytes);
+
+	this->kernelHistRG.setArg(0, sizeof(cl_uint4 *), &out);
+	this->kernelHistRG.setArg(1, sizeof(cl_uint *), &globalHist);
+	this->kernelHistRG.setArg(2, n4VectorsPerWorkItem);
+
+	queue.enqueueNDRangeKernel(this->kernelHistRG, offset, global, local);
+	queue.finish();
+
+#ifndef __CS_DEBUG_OFF__
+
+	// Pobieram histogramy wygenerowane
+	// przez ka¿d¹ workGroup
+	cl_uint* dataHIST = new cl_uint[nWorkGroups * HISTOGRAM_LEVELS];
+	queue.enqueueReadBuffer(globalHist, CL_TRUE, 0, size_global_rg_hist_bytes, dataHIST);
+
+	// Suma przyznanych w histogramach punktów
+	int sumGPU = 0;
+	for(int i = 0; i < nWorkGroups * HISTOGRAM_LEVELS; i++)
+	{
+		sumGPU += int(dataHIST[i]);
+	}
+	// Redukcja do jednego histogramu
+	// TODO: Przenieœæ to do GPU
+	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
+	{
+		int bin = 0;
+		for(int j = 0; j< nWorkGroups;j++)
+		{
+			bin += dataHIST[i + j*HISTOGRAM_LEVELS];
+		}
+		dataHIST[i] = bin;
+	}
+	// Sprawdzenie, czy histogram obliczony przez GPU jest identyczny
+	// z obliczonym tradycyjnie.
+	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
+	{
+		if(histCPU[i] != dataHIST[i])
+		{
+			std::cout << i << "\tCPU: " << histCPU[i] << "\tGPU: " << dataHIST[i] << "\n";
+		}
+	}	
+	// Czy liczba przydzielonych "punktów" jest OK
+	if(w*h != sumGPU)
+	{
+		std::cout <<  "\t SUM CPU: " << w*h << "\t SUM GPU: " << sumGPU << "\n";
 	}
 #endif
 }
