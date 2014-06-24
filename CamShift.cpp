@@ -97,7 +97,7 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 
 	// ZMIANA RGBA -> RG
 	int size_rgba_bytes = w*h*sizeof(cl_uchar4);
-	int size_rg_bytes = w*h*sizeof(cl_uchar);
+	int size_rg_bytes = this->trackRect.width * this->trackRect.height * sizeof(cl_uchar);
 
 	cl::Buffer in(context, CL_MEM_READ_ONLY, size_rgba_bytes);
 	cl::Buffer out(context, CL_MEM_READ_WRITE, size_rg_bytes);
@@ -107,13 +107,14 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	// Szerokoœæ zmniejszamy o 4 bo kernel analizuje po 4 jednoczeœnie
 	// Liczba pikseli musi byæ podzielna przez 4, no ale ka¿da szanuj¹ca siê
 	// rozdzielczoœæ spe³nia ten warunek.
-	const int w4 = w / 4;
-	cl::NDRange global(w4, h);
+	const int w4 = this->trackRect.width / 4;
+	cl::NDRange global(w4, this->trackRect.height);
 	cl::NDRange local = cl::NullRange;
-	cl::NDRange offset = cl::NDRange(0, 0);
+	cl::NDRange offset = cl::NDRange(this->trackRect.x/4, this->trackRect.y);
 
 	this->kernelRGBA2RG_HIST_IDX_4.setArg(0, sizeof(cl_uint4 *), &in);
 	this->kernelRGBA2RG_HIST_IDX_4.setArg(1, sizeof(cl_uchar4 *), &out);
+	this->kernelRGBA2RG_HIST_IDX_4.setArg(2, w);
 
 	queue.enqueueNDRangeKernel(this->kernelRGBA2RG_HIST_IDX_4, offset, global, local);
 	queue.finish();
@@ -137,9 +138,12 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	{
 		histCPU[i]=0;
 	}
-	for(int i = 0; i < w*h; i++)
+	for(int i = 0; i < this->trackRect.height; i++)
 	{
-		histCPU[int(dataRG[i])]++;
+		for(int j = 0; j < this->trackRect.width; j++)
+		{
+			histCPU[int(dataRG[j + i * this->trackRect.width])]++;
+		}
 	}
 
 #endif
@@ -148,7 +152,7 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	const int n4VectorsPerWorkItem = 1;
 	// Rozmiar pix to jeden bajt
 	// Wczytujemy jednoczeœnie 4 int'y, zatem 16 bajtów
-	const int n4Vectors = w * h / 16;
+	const int n4Vectors = this->trackRect.width * this->trackRect.height / 16;
 	// rozmiar: liczba wektorów uint4 przez liczbe wektorów na workItem
 	const int globalSize = n4Vectors/n4VectorsPerWorkItem;
 	const int nWorkGroups = (globalSize / workGroupSize);
@@ -156,6 +160,7 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	// Globalnie: jeden wymiar, 
 	global =  cl::NDRange(globalSize);
 	local = cl::NDRange(workGroupSize);
+	offset = cl::NDRange(0, 0);
 	const int size_global_rg_hist_bytes = nWorkGroups * HISTOGRAM_LEVELS * sizeof(cl_uint);
 	cl::Buffer globalHist(context, CL_MEM_READ_WRITE, size_global_rg_hist_bytes);
 
@@ -202,7 +207,7 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	// Czy liczba przydzielonych "punktów" jest OK
 	if(w*h != sumGPU)
 	{
-		std::cout <<  "\t SUM CPU: " << w*h << "\t SUM GPU: " << sumGPU << "\n";
+		std::cout <<  "\t SUM CPU: " << this->trackRect.width * this->trackRect.height << "\t SUM GPU: " << sumGPU << "\n";
 	}
 #endif
 }

@@ -35,9 +35,11 @@ __kernel void RGBAtoRG_4(
 
 __kernel void RGBA2RG_HIST_IDX_4(
 	__global uint4 * src,
-	__global uchar4 * dst)
+	__global uchar4 * dst,
+	uint rgba_width)
 {    	
-	const uint idx = get_global_id(0) +  get_global_id(1) * get_global_size(0);	
+	const uint idx = get_global_id(0) +  get_global_id(1) * rgba_width;	
+	const uint dst_idx = idx - (get_global_offset(0) + get_global_offset(1) * rgba_width);
 	uint4 rgba4 = src[idx];	
 	
 	// OBLICZAM SUME R+G+B dla ka¿dego pix
@@ -57,7 +59,7 @@ __kernel void RGBA2RG_HIST_IDX_4(
 	// (r + 16 * g)
 	// Dzielenie, konwersja do uchar4 i zapis
 	// 15*(R+16*G) / (255)
-	dst[idx] = convert_uchar4_sat(rg_4/(uint4)(17));
+	dst[dst_idx] = convert_uchar4_sat(rg_4/(uint4)(17));
 }
 
 #pragma OPENCL EXTENSION cl_khr_local_int32_base_atomics : enable
