@@ -15,10 +15,12 @@
 
 #include "common.hpp"
 
-#define TRACK_RECT_W 256
-#define TRACK_RECT_H 192
+#define TRACK_RECT_W 128
+#define TRACK_RECT_H 128
 
 #define HISTOGRAM_LEVELS 256
+
+#define __CS_DEBUG_OFF__
 
 class CamShift
 {
@@ -30,8 +32,11 @@ class CamShift
 	cl::Program program;
 
 	cl::Kernel testKernel;
+
 	cl::Kernel kernelRGBA2RG_HIST_IDX_4;
 	cl::Kernel kernelHistRG;
+	cl::Kernel kernelRGBA2HistScore;
+
 	cl::CommandQueue queue;
 	/** OpenCL: End*/
 	
@@ -41,7 +46,7 @@ class CamShift
 
 	/** True if object is being tracked; false otherwise*/
 	bool tracking;
-	std::array<cl_uint, 256> trackedObjHist;
+	cl_uint trackedObjHist[256];
 	
 public:
 	CamShift(void);

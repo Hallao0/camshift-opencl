@@ -52,6 +52,7 @@ int main() {
 		}
 
 		cvDestroyAllWindows();
+		getchar();
 		return EXIT_SUCCESS;
 	}
 	catch (cl::Error &e) {

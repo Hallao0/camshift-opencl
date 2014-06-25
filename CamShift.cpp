@@ -30,6 +30,7 @@ CamShift::CamShift(void)
 		this->testKernel = cl::Kernel(program, "test");
 		this->kernelRGBA2RG_HIST_IDX_4= cl::Kernel(program, "RGBA2RG_HIST_IDX_4");
 		this->kernelHistRG = cl::Kernel(program, "histRG");
+		this->kernelRGBA2HistScore = cl::Kernel(program, "RGBA2HistScore");
 		this->queue = cl::CommandQueue(context, devices[0], CL_QUEUE_PROFILING_ENABLE);
 
 		this->trackRect = cv::Rect(0, 0, TRACK_RECT_W, TRACK_RECT_H);
@@ -119,7 +120,7 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	queue.finish();
 
 #ifndef __CS_DEBUG_OFF__
-	
+
 	std::cout << "global size: " << this->trackRect.width * this->trackRect.height/4 << "\n";
 	std::cout << "rect X: " << this->trackRect.x << "\n";
 	std::cout << "rect Y: " << this->trackRect.y << "\n";
@@ -129,14 +130,12 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	// Wypisuje 10 pierwszych wyników przekszta³cenia BGR -> RGBA -> R+16*G(indeks na histogramie 16x16 RxG)
 	// dla rêcznego sprawdzenia poprawnoœci obliczeñ
 	for(int i = 0; i < 0; i++)
-	{
-		
+	{		
 		std::cout << i << "\t Hist idx (RxG): " << int(dataRG[i]) << "\n";
 		std::cout << i+144*640+192 << "RGBA: \t R:" << int(dataRGBA[(i*4)+144*640+192]) << "\t G:" << int(dataRGBA[(i*4)+1+144*640+192])
 			<< "\t B:" << int(dataRGBA[(i*4)+2+144*640+192]) << "\t A:" << int(dataRGBA[(i*4)+3+144*640+192]) << "\n";
 		std::cout << i << "BGR: \t R:" << int(mat.data[(i*3)+2]) << "\t G:" << int(mat.data[(i*3)+1])
 			<< "\t B:" << int(mat.data[(i*3)]) << "\n";		
-
 	}
 	int histCPU[HISTOGRAM_LEVELS];
 	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
@@ -176,19 +175,11 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	queue.enqueueNDRangeKernel(this->kernelHistRG, offset, global, local);
 	queue.finish();
 
-#ifndef __CS_DEBUG_OFF__
-
 	// Pobieram histogramy wygenerowane
 	// przez ka¿d¹ workGroup
 	cl_uint* dataHIST = new cl_uint[nWorkGroups * HISTOGRAM_LEVELS];
 	queue.enqueueReadBuffer(globalHist, CL_TRUE, 0, size_global_rg_hist_bytes, dataHIST);
 
-	// Suma przyznanych w histogramach punktów
-	int sumGPU = 0;
-	for(int i = 0; i < nWorkGroups * HISTOGRAM_LEVELS; i++)
-	{
-		sumGPU += int(dataHIST[i]);
-	}
 	// Redukcja do jednego histogramu
 	// TODO: Przenieœæ to do GPU
 	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
@@ -200,6 +191,23 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 		}
 		dataHIST[i] = bin;
 	}
+
+	// Zapis
+	memcpy(this->trackedObjHist, dataHIST, HISTOGRAM_LEVELS * sizeof(cl_uint));
+
+#ifndef __CS_DEBUG_OFF__
+
+	std::cout << "HISTOGRAM trackedObjHist\n";
+	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
+	{
+		std::cout << i << ": " << this->trackedObjHist[i] << "\n";
+	}
+	// Suma przyznanych w histogramach punktów
+	int sumGPU = 0;
+	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
+	{
+		sumGPU += int(dataHIST[i]);
+	}
 	// Sprawdzenie, czy histogram obliczony przez GPU jest identyczny
 	// z obliczonym tradycyjnie.
 	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
@@ -208,13 +216,9 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 		{
 			std::cout << i << "\tCPU: " << histCPU[i] << "\tGPU: " << dataHIST[i] << "\n";
 		}
-	}	
-	for(int i = 0; i < 256; i++)
-	{
-		std::cout << i << ":\t"<< dataHIST[i] << "\n";		
-	}
+	} 
 	// Czy liczba przydzielonych "punktów" jest OK
-	if(w*h != sumGPU)
+	if(this->trackRect.width * this->trackRect.height != sumGPU)
 	{
 		std::cout <<  "\t SUM CPU: " << this->trackRect.width * this->trackRect.height << "\t SUM GPU: " << sumGPU << "\n";
 	}
@@ -225,38 +229,85 @@ void CamShift::process(cv::Mat& mat)
 {
 	try {
 
-		int w = mat.cols;
-		int h = mat.rows;
-		uchar * image = mat.data;
+		cv::Point p = meanShift(mat);
+		std::cout << "x: " << p.x << "\ty: " << p.y << "\n";
 
-		int size = 3*w*h*sizeof(uchar);
+		const int w = mat.cols;
+		const int h = mat.rows;
 
-		cl::Buffer in(context, CL_MEM_READ_ONLY, size);
-		cl::Buffer out(context, CL_MEM_WRITE_ONLY, size);
+		this->trackRect.x = this->trackRect.x + (p.x - this->trackRect.width/2);
+		this->trackRect.y = this->trackRect.y + (p.y - this->trackRect.height/2);
 
-		queue.enqueueWriteBuffer(in, CL_TRUE, 0, size, image);
+		this->trackRect.x = min(w - this->trackRect.x, this->trackRect.x);
+		this->trackRect.y = min(h - this->trackRect.y, this->trackRect.y);
 
-		cl::NDRange global(3*w, h-240);
-		cl::NDRange local = cl::NullRange;
-		cl::NDRange offset = cl::NDRange(0, 240);
-
-		const size_t offsetFlat = 240 * 3 * w;
-		static int change = 50;
-
-		this->testKernel.setArg(0, sizeof(cl_uchar *), &in);
-		this->testKernel.setArg(1, sizeof(cl_uchar *), &out);
-		this->testKernel.setArg(2, 3*w);
-		this->testKernel.setArg(3, change);
-
-		queue.enqueueNDRangeKernel(this->testKernel, offset, global, local);
-		queue.finish();
-
-		queue.enqueueReadBuffer(out, CL_TRUE, offsetFlat, size-offsetFlat, image+offsetFlat);
-
+		this->trackRect.x = max(this->trackRect.x, this->trackRect.x);
+		this->trackRect.y = max(this->trackRect.y, this->trackRect.y);
+		
 		drawTrackRect(mat);
 
 	} catch(...)
 	{
 		std::rethrow_exception(std::current_exception());
 	}
+}
+
+cv::Point CamShift::meanShift(cv::Mat& mat)
+{
+	const int w = mat.cols;
+	const int h = mat.rows;
+
+	// RGBA to Histogram Score
+	// START
+
+	// ZMIANA BGR -> RGBA
+	cl_uint * dataRGBA = new cl_uint[mat.total()];
+	cv::Mat matRGBA(mat.size(), CV_8UC4, dataRGBA);
+	cv::cvtColor(mat, matRGBA, CV_BGR2RGBA, 4);
+
+	cl::Buffer img_rgba(context, CL_MEM_READ_ONLY, w * h * sizeof(cl_uchar4));
+	cl::Buffer hist(context, CL_MEM_READ_ONLY, sizeof(cl_uint) * HISTOGRAM_LEVELS);
+	cl::Buffer img_score(context, CL_MEM_READ_WRITE, w * h * sizeof(float));
+
+	queue.enqueueWriteBuffer(img_rgba, CL_TRUE, 0, w * h * sizeof(cl_uchar4), matRGBA.data);		
+	queue.enqueueWriteBuffer(hist, CL_TRUE, 0, sizeof(cl_uint) * HISTOGRAM_LEVELS, this->trackedObjHist);		
+
+	this->kernelRGBA2HistScore.setArg(0, sizeof(cl_uint *), &img_rgba);
+	this->kernelRGBA2HistScore.setArg(1, w);
+	this->kernelRGBA2HistScore.setArg(2, sizeof(cl_float *), &img_score);
+	this->kernelRGBA2HistScore.setArg(3, sizeof(cl_uint *), &hist);
+
+	cl::NDRange global = cl::NDRange(w, h);
+	cl::NDRange local = cl::NullRange;
+	cl::NDRange offset = cl::NDRange(0, 0);
+
+	queue.enqueueNDRangeKernel(this->kernelRGBA2HistScore, offset, global, local);
+	queue.finish();
+
+	// END
+	// RGBA to Histogram Score
+	
+	//TODO: DO GPU
+	float mm01, mm10, mm00, tmp;
+	mm00 = mm01 = mm10 = 0;
+
+	float * data_img_score = new float[w*h];
+	queue.enqueueReadBuffer(img_score, CL_TRUE, 0, w * h * sizeof(float), data_img_score);
+
+	for(int i = 0; i < this->trackRect.width; i++)
+	{
+		for(int j = 0; j < this->trackRect.height; j++)
+		{
+ 			tmp = data_img_score[(i + this->trackRect.x)+w*(j + this->trackRect.y)];
+			mm00 += tmp;
+			mm10 += i * tmp;
+			mm01 += j * tmp;
+		}
+	}
+	delete[] data_img_score;
+
+	if( fabs(mm00) < DBL_EPSILON )
+		return cv::Point(this->trackRect.width/2, this->trackRect.height/2);
+
+	return cv::Point(int(mm10/mm00), int(mm01/mm00));
 }
