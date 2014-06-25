@@ -4,8 +4,7 @@ CamShift::CamShift(void)
 {
 	try	{
 
-		std::string programStr = common::get_file_content(std::string(KERNELS_SOURCE_FILE));	
-		std::cout << programStr;
+		std::string programStr = common::get_file_content(std::string(KERNELS_SOURCE_FILE));
 		this->sources.push_back(std::pair<char*, size_t>(const_cast<char*>(programStr.c_str()), programStr.length()));
 
 		std::vector<cl::Platform> platforms;
@@ -91,7 +90,7 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	int h = mat.rows;
 
 	// ZMIANA BGR -> RGBA
-	uchar* dataRGBA = new uchar[mat.total()*4];
+	cl_uint* dataRGBA = new cl_uint[mat.total()];
 	cv::Mat matRGBA(mat.size(), CV_8UC4, dataRGBA);
 	cv::cvtColor(mat, matRGBA, CV_BGR2RGBA, 4);
 
@@ -114,24 +113,30 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 
 	this->kernelRGBA2RG_HIST_IDX_4.setArg(0, sizeof(cl_uint4 *), &in);
 	this->kernelRGBA2RG_HIST_IDX_4.setArg(1, sizeof(cl_uchar4 *), &out);
-	this->kernelRGBA2RG_HIST_IDX_4.setArg(2, w);
+	this->kernelRGBA2RG_HIST_IDX_4.setArg(2, w/4);
 
 	queue.enqueueNDRangeKernel(this->kernelRGBA2RG_HIST_IDX_4, offset, global, local);
 	queue.finish();
 
 #ifndef __CS_DEBUG_OFF__
+	
+	std::cout << "global size: " << this->trackRect.width * this->trackRect.height/4 << "\n";
+	std::cout << "rect X: " << this->trackRect.x << "\n";
+	std::cout << "rect Y: " << this->trackRect.y << "\n";
 
 	uchar* dataRG = new uchar[size_rg_bytes];
 	queue.enqueueReadBuffer(out, CL_TRUE, 0, size_rg_bytes, dataRG);
 	// Wypisuje 10 pierwszych wyników przekszta³cenia BGR -> RGBA -> R+16*G(indeks na histogramie 16x16 RxG)
 	// dla rêcznego sprawdzenia poprawnoœci obliczeñ
-	for(int i = 0; i < 10; i++)
+	for(int i = 0; i < 0; i++)
 	{
+		
 		std::cout << i << "\t Hist idx (RxG): " << int(dataRG[i]) << "\n";
-		std::cout << i << "RGBA: \t R:" << int(dataRGBA[i*4]) << "\t G:" << int(dataRGBA[(i*4)+1])
-			<< "\t B:" << int(dataRGBA[(i*4)+2]) << "\t A:" << int(dataRGBA[(i*4)+3]) << "\n";
+		std::cout << i+144*640+192 << "RGBA: \t R:" << int(dataRGBA[(i*4)+144*640+192]) << "\t G:" << int(dataRGBA[(i*4)+1+144*640+192])
+			<< "\t B:" << int(dataRGBA[(i*4)+2+144*640+192]) << "\t A:" << int(dataRGBA[(i*4)+3+144*640+192]) << "\n";
 		std::cout << i << "BGR: \t R:" << int(mat.data[(i*3)+2]) << "\t G:" << int(mat.data[(i*3)+1])
-			<< "\t B:" << int(mat.data[(i*3)]) << "\n";
+			<< "\t B:" << int(mat.data[(i*3)]) << "\n";		
+
 	}
 	int histCPU[HISTOGRAM_LEVELS];
 	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
@@ -160,7 +165,7 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	// Globalnie: jeden wymiar, 
 	global =  cl::NDRange(globalSize);
 	local = cl::NDRange(workGroupSize);
-	offset = cl::NDRange(0, 0);
+	offset = cl::NDRange(0);
 	const int size_global_rg_hist_bytes = nWorkGroups * HISTOGRAM_LEVELS * sizeof(cl_uint);
 	cl::Buffer globalHist(context, CL_MEM_READ_WRITE, size_global_rg_hist_bytes);
 
@@ -204,6 +209,10 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 			std::cout << i << "\tCPU: " << histCPU[i] << "\tGPU: " << dataHIST[i] << "\n";
 		}
 	}	
+	for(int i = 0; i < 256; i++)
+	{
+		std::cout << i << ":\t"<< dataHIST[i] << "\n";		
+	}
 	// Czy liczba przydzielonych "punktów" jest OK
 	if(w*h != sumGPU)
 	{

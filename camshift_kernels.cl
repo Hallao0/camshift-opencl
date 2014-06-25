@@ -38,9 +38,21 @@ __kernel void RGBA2RG_HIST_IDX_4(
 	__global uchar4 * dst,
 	uint rgba_width)
 {    	
-	const uint idx = get_global_id(0) +  get_global_id(1) * rgba_width;	
-	const uint dst_idx = idx - (get_global_offset(0) + get_global_offset(1) * rgba_width);
-	uint4 rgba4 = src[idx];	
+	const uint idx = get_global_id(0) + get_global_id(1) * rgba_width;	
+	const uint dst_idx = idx - (get_global_offset(0) + get_global_offset(1) * rgba_width + (get_global_id(1)-get_global_offset(1)) * 2 * get_global_offset(0));
+	__global uint * src_uint = (__global uint *) src;
+	uint4 rgba4 = (uint4)(src_uint[idx],src_uint[idx+1],src_uint[idx+2],src_uint[idx+3]);		
+	
+	//printf("src %d\n", src);
+	//printf("src %d\n", &src[idx]);
+
+	//if(get_global_id(0) == get_global_offset(0) && get_global_id(1) == get_global_offset(1))
+	//{
+	//	printf("gid1 %d\n", get_global_id(0));
+	//	printf("gid2 %d\n", get_global_id(1));
+	//	printf("idx %d\n", idx);
+	//	printf("dst idx %d\n", dst_idx);
+	//}
 	
 	// OBLICZAM SUME R+G+B dla ka¿dego pix
 	// dodaje r
@@ -52,6 +64,11 @@ __kernel void RGBA2RG_HIST_IDX_4(
 	// dodaje b
 	//sum_rgb += (rgba4 >> 16) & MASK_RIGHT_MOST_BYTE;
 		
+	//printf("rgba4.x %d\n",  rgba4.x);
+	//printf("rgba4.y %d\n",  rgba4.y);
+	//printf("r %d\n", r.x);
+	//printf("g %d\n", g.x);
+
 	// 16 * g
 	uint4 rg_4 = g * (uint4)(16);
 	// r + 16 * g
