@@ -55,6 +55,7 @@ public:
 
 	void drawTrackRect(cv::Mat& mat);	
 	void startTracking(cv::Mat& mat);
+	void stopTracking();
 	void process(cv::Mat& mat);
 
 private:

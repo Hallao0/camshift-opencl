@@ -23,8 +23,10 @@ int main() {
 		//check if video device has been initialised
 		if (!stream.isOpened()) {
 			cout << "Cannot open camera.";
+			cvDestroyAllWindows();
+			return EXIT_SUCCESS;
 		}
-		
+
 		//TODO: przeniesienie ca³ego sterowania CamShiftem do oddzielnej klasy/namepspace, mo¿e do samego CamShift
 		// ¿eby tylko daæ camshitf.start() i dzia³a.
 
@@ -32,27 +34,35 @@ int main() {
 		Mat cameraFrame;
 
 		stream >> cameraFrame;	
-		std::cout << cameraFrame.size() << std::endl;		
-		std::cout << "w:" << cameraFrame.cols << std::endl;
-		std::cout << "h:" <<  cameraFrame.rows << std::endl;
+		std::cout << cameraFrame.size() << std::endl;
 
-		while(cvWaitKey(33) != 32)
+		int key;
+		
+		while((key = cvWaitKey(33)) != 27)
 		{
-			stream >> cameraFrame;	
-			camshift.drawTrackRect(cameraFrame);
-			imshow("main", cameraFrame);
+			while(cvWaitKey(33) != 32)
+			{
+				stream >> cameraFrame;	
+				camshift.drawTrackRect(cameraFrame);
+				imshow("main", cameraFrame);
+			}	
+			std::cout << "Tracking started" << std::endl;
+			camshift.startTracking(cameraFrame);	
+			while((key = cvWaitKey(33)) != 32)
+			{
+				stream >> cameraFrame;	
+				camshift.process(cameraFrame);
+				imshow("main", cameraFrame);
+				if(key == 27)
+				{
+					cvDestroyAllWindows();
+					return EXIT_SUCCESS;
+				}
+			}
+			std::cout << "Tracking stopped" << std::endl;
+			camshift.stopTracking();
 		}
-		std::cout << "Tracking started" << std::endl;
-		camshift.startTracking(cameraFrame);		
-		while(cvWaitKey(33) != 27)
-		{
-			stream >> cameraFrame;	
-			camshift.process(cameraFrame);
-			imshow("main", cameraFrame);
-		}
-
 		cvDestroyAllWindows();
-		getchar();
 		return EXIT_SUCCESS;
 	}
 	catch (cl::Error &e) {
@@ -67,6 +77,5 @@ int main() {
 	catch (...) {
 		std::cerr << "Unhandled exception of unknown type reached the top of main.\n";		
 	}
-	getchar();
 	return EXIT_FAILURE;
 }

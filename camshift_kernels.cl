@@ -39,7 +39,7 @@ __kernel void RGBA2RG_HIST_IDX_4(
 }
 
 __kernel void RGBA2HistScore(
-	__global uint * src,
+	__global uint *  src,
 	const uint width,
 	__global float * dst,
 	__constant uint * histogram

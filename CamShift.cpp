@@ -84,6 +84,11 @@ void CamShift::startTracking(cv::Mat& mat)
 	getTrackedObjHist(mat);
 }
 
+void CamShift::stopTracking()
+{
+	this->tracking = false;
+}
+
 void CamShift::getTrackedObjHist(cv::Mat& mat)
 {
 	int w = mat.cols;
@@ -181,6 +186,8 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 
 	// Redukcja do jednego histogramu
 	// TODO: Przenieœæ to do GPU
+	// Dodane wy³uskanie maksimum
+	int max = 0;
 	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
 	{
 		int bin = 0;
@@ -189,6 +196,16 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 			bin += dataHIST[i + j*HISTOGRAM_LEVELS];
 		}
 		dataHIST[i] = bin;
+		if(bin > max)
+		{
+			max = bin;
+		}
+	}
+
+	// Normalizacja do 255
+	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
+	{
+		dataHIST[i] = (dataHIST[i] * 255)/max;
 	}
 
 	// Zapis
@@ -344,6 +361,11 @@ void CamShift::meanShift(cv::Mat& mat)
 #endif
 		// END
 		// MOMENTS		
+		
+		// Poprawka rozmiaru
+		//std::cout << "m00: " << 2*sqrt(result.s[0]) << "\n";
+		//std::cout << "s: " << 2*sqrt(result.s[0]/256) << "\n";
+		//std::cout << "s: " << 2*sqrt(result.s[0]/256)/(this->trackRect.height*this->trackRect.width) << "\n";
 		
 		if( fabs(result.s[0]) < DBL_EPSILON )
 			break;
