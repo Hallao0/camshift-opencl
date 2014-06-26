@@ -36,6 +36,7 @@ class CamShift
 	cl::Kernel kernelRGBA2RG_HIST_IDX_4;
 	cl::Kernel kernelHistRG;
 	cl::Kernel kernelRGBA2HistScore;
+	cl::Kernel kernelMoments;
 
 	cl::CommandQueue queue;
 	/** OpenCL: End*/
@@ -58,7 +59,7 @@ public:
 
 private:
 	void getTrackedObjHist(cv::Mat& mat);
-	cv::Point meanShift(cv::Mat& mat);
+	void meanShift(cv::Mat& mat);
 	void clean();
 };
 

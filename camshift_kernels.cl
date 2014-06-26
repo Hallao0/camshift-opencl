@@ -2,7 +2,7 @@
 #define G_LEVELS 16
 
 #define MASK_RIGHT_MOST_BYTE_4	(uint4)(255)
-#define MASK_RIGHT_MOST_BYTE	(uint4)(255)
+#define MASK_RIGHT_MOST_BYTE	(uint)(255)
 
 // 256 kube³ków (16x16)
 #define HIST_BINS 256
@@ -16,7 +16,7 @@ __kernel void RGBA2RG_HIST_IDX_4(
 	const uint dst_idx = idx - (get_global_offset(0) + get_global_offset(1) * rgba_width + (get_global_id(1)-get_global_offset(1)) * 2 * get_global_offset(0));
 	__global uint * src_uint = (__global uint *) src;
 	uint4 rgba4 = (uint4)(src_uint[idx],src_uint[idx+1],src_uint[idx+2],src_uint[idx+3]);		
-		
+	
 	// OBLICZAM SUME R+G+B dla ka¿dego pix
 	// dodaje r
 	uint4 r = (rgba4) & MASK_RIGHT_MOST_BYTE_4;
@@ -37,7 +37,6 @@ __kernel void RGBA2RG_HIST_IDX_4(
 	// 15*(R+16*G) / (r+g+b)
 	dst[dst_idx] = convert_uchar4_sat(rg_4/sum_rgb);
 }
-
 
 __kernel void RGBA2HistScore(
 	__global uint * src,
@@ -144,4 +143,76 @@ void histRG(
 		}
 		globalHistRG[(get_group_id(0) * HIST_BINS) + binIdx] = bin;
 	}	 
+}
+
+/**
+* Oblicza momenty m00, m10, m01 dla prostok¹tnego obszaru wewn¹trz podanego obrazu.
+*/
+__kernel void moments(
+    __global float * img, // Caly obraz
+    __local float4 * scratch,
+    const uint size, // Rozmiar obszaru dla ktorego obliczamy momenty
+    const uint rect_width, // Szerokosc prostok¹tengo obszaru dla którego obliczamy momenty
+	const uint img_width, // Szerokoœæ ca³ego obrazka
+	const uint offset_x,  // Offset x, y 
+	const uint offset_y,  // Offset x, y 
+    __global float4* result // Wynik czêœciowej redukcji, jeszcze trzeba dokoñczyæ redukcje po stronie hosta
+	) 
+{
+    uint rect_idx = get_global_id(0);
+    float4 accumulator = (float4) 0;
+
+	// MOMENTY
+	// START
+	{		
+		float frect_width = convert_float(rect_width);
+			
+		// Wspó³rzedne w prostok¹tnym obszarze
+		int rect_y = trunc(((float)rect_idx)/frect_width);
+		int rect_x = rect_idx - rect_y * rect_width;
+
+		// Wektor do wyliczania momentow
+		// m00, m10, m01, -
+		float4 m = (float4)(1.0, (float)rect_x, (float)rect_y, 0.0);
+
+		// Czêœciowa redukcja po³¹czona z obliczaniem
+		// momentów m00, m10, m01.
+		while (rect_idx < size) 
+		{
+			float4 element = m * (float4)img[rect_x + offset_x + (rect_y + offset_y) * img_width];
+			accumulator += element;
+			rect_idx += get_global_size(0);
+    
+			// Wspó³rzedne w prostok¹tnym obszarze
+			rect_y = trunc(((float)rect_idx)/frect_width);
+			rect_x = rect_idx - rect_y * rect_width;
+			// Wektor do wyliczania momentów
+			m = (float4)(1.0, (float)rect_x, (float)rect_y, 0.0);
+		}
+	}
+	// END
+	// MOMENTY
+
+    // REDUKCJA RÓWNOLEG£A
+	// START
+    int lid = get_local_id(0);
+    scratch[lid] = accumulator;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(int offset = get_local_size(0) / 2; offset > 0; offset = offset / 2) 
+    {
+        if (lid < offset) 
+        {
+            float4 other = scratch[lid + offset];
+            float4 mine = scratch[lid];
+            scratch[lid] = mine + other;
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+	// Zapis wyniku redukcji
+    if (lid == 0) 
+    {
+        result[get_group_id(0)] = scratch[0];
+    }
+	// END
+	// REDUKCJA
 }

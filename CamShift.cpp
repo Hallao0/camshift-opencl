@@ -1,5 +1,6 @@
 #include "CamShift.hpp"
 
+
 CamShift::CamShift(void)
 {
 	try	{
@@ -27,10 +28,10 @@ CamShift::CamShift(void)
 		this->program = cl::Program(context, sources);
 		program.build(devices);
 
-		this->testKernel = cl::Kernel(program, "test");
 		this->kernelRGBA2RG_HIST_IDX_4= cl::Kernel(program, "RGBA2RG_HIST_IDX_4");
 		this->kernelHistRG = cl::Kernel(program, "histRG");
 		this->kernelRGBA2HistScore = cl::Kernel(program, "RGBA2HistScore");
+		this->kernelMoments = cl::Kernel(program, "moments");
 		this->queue = cl::CommandQueue(context, devices[0], CL_QUEUE_PROFILING_ENABLE);
 
 		this->trackRect = cv::Rect(0, 0, TRACK_RECT_W, TRACK_RECT_H);
@@ -39,8 +40,7 @@ CamShift::CamShift(void)
 		this->tracking = false;
 
 	} catch(cl::Error &e)
-	{		         	
-#ifndef __CS_DEBUG_OFF__
+	{		         
 		if(e.err() == CL_BUILD_PROGRAM_FAILURE)
 		{
 			std::vector<cl::Device> devices;
@@ -52,7 +52,6 @@ CamShift::CamShift(void)
 			std::cout << "Build Log:\t " << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(devices[0]) << std::endl;
 			std::cout << " ************************************************\n";
 		}
-#endif
 		std::rethrow_exception(std::current_exception());
 	} catch(...)
 	{		         	
@@ -228,39 +227,25 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 void CamShift::process(cv::Mat& mat)
 {
 	try {
-
-		cv::Point p = meanShift(mat);
-		std::cout << "x: " << p.x << "\ty: " << p.y << "\n";
-
-		const int w = mat.cols;
-		const int h = mat.rows;
-
-		this->trackRect.x = this->trackRect.x + (p.x - this->trackRect.width/2);
-		this->trackRect.y = this->trackRect.y + (p.y - this->trackRect.height/2);
-
-		this->trackRect.x = min(w - this->trackRect.x, this->trackRect.x);
-		this->trackRect.y = min(h - this->trackRect.y, this->trackRect.y);
-
-		this->trackRect.x = max(this->trackRect.x, this->trackRect.x);
-		this->trackRect.y = max(this->trackRect.y, this->trackRect.y);
-		
+		meanShift(mat);
 		drawTrackRect(mat);
-
 	} catch(...)
 	{
 		std::rethrow_exception(std::current_exception());
 	}
 }
 
-cv::Point CamShift::meanShift(cv::Mat& mat)
+void CamShift::meanShift(cv::Mat& mat)
 {
 	const int w = mat.cols;
 	const int h = mat.rows;
+
 
 	// RGBA to Histogram Score
 	// START
 
 	// ZMIANA BGR -> RGBA
+
 	cl_uint * dataRGBA = new cl_uint[mat.total()];
 	cv::Mat matRGBA(mat.size(), CV_8UC4, dataRGBA);
 	cv::cvtColor(mat, matRGBA, CV_BGR2RGBA, 4);
@@ -286,28 +271,102 @@ cv::Point CamShift::meanShift(cv::Mat& mat)
 
 	// END
 	// RGBA to Histogram Score
-	
-	//TODO: DO GPU
-	float mm01, mm10, mm00, tmp;
-	mm00 = mm01 = mm10 = 0;
 
+	// MEANSHIFT
+	// START
+#ifndef __CS_DEBUG_OFF__
 	float * data_img_score = new float[w*h];
 	queue.enqueueReadBuffer(img_score, CL_TRUE, 0, w * h * sizeof(float), data_img_score);
+#endif
+	//MOMENTY GPU USTAWIENIA
+	const int local_scratch_size = 128;
+	const int nWorkGroups = 40;
+	float * reduction_result_host = new float[local_scratch_size * 4];
+	cl::Buffer reduction_result(context, CL_MEM_READ_WRITE, local_scratch_size * nWorkGroups * sizeof(cl_float4));
 
-	for(int i = 0; i < this->trackRect.width; i++)
-	{
-		for(int j = 0; j < this->trackRect.height; j++)
+	const int niters = 100;
+	for( int i = 0; i < niters; i++ )
+	{     
+		this->trackRect.width = max(this->trackRect.width, 1);
+		this->trackRect.height = max(this->trackRect.height, 1);
+
+		// MOMENTS
+		// START
+
+		//GPU
+		//START
+		this->kernelMoments.setArg(0, sizeof(cl_float *), &img_score);
+		this->kernelMoments.setArg(1, cl::Local(local_scratch_size * sizeof(cl_float4)));
+		this->kernelMoments.setArg(2, this->trackRect.width * this->trackRect.height);
+		this->kernelMoments.setArg(3, this->trackRect.width);
+		this->kernelMoments.setArg(4, w);
+		this->kernelMoments.setArg(5, this->trackRect.x);
+		this->kernelMoments.setArg(6, this->trackRect.y);
+		this->kernelMoments.setArg(7, sizeof(cl_float4 *), &reduction_result);
+
+		global = cl::NDRange(nWorkGroups * local_scratch_size);
+		local = cl::NDRange(local_scratch_size);
+		offset = cl::NDRange(0);
+
+		queue.enqueueNDRangeKernel(this->kernelMoments, offset, global, local);
+		queue.finish();
+		queue.enqueueReadBuffer(reduction_result, CL_TRUE, 0, local_scratch_size * sizeof(cl_float4), reduction_result_host);
+		cl_float4 result = common::reduceHost(reduction_result_host, 4 * local_scratch_size);		
+		//END
+		//GPU
+
+#ifndef __CS_DEBUG_OFF__
+		//CPU
+		//START
+		float m01, m10, m00, tmp;
+		m00 = m01 = m10 = 0;		
+
+		for(int i = 0; i < this->trackRect.width; i++)
 		{
- 			tmp = data_img_score[(i + this->trackRect.x)+w*(j + this->trackRect.y)];
-			mm00 += tmp;
-			mm10 += i * tmp;
-			mm01 += j * tmp;
+			for(int j = 0; j < this->trackRect.height; j++)
+			{
+				tmp = data_img_score[(i + this->trackRect.x)+w*(j + this->trackRect.y)];
+				m00 += tmp;
+				m10 += i * tmp;
+				m01 += j * tmp;
+			}
 		}
+		// END
+		// CPU
+		if(fabs(m00 - result.s[0]) > 0.01*m00
+			|| fabs(m10 - result.s[1]) > 0.01*m10
+			|| fabs(m01 - result.s[2]) > 0.01*m01)
+		{
+			std::cout << "m00 CPU:" << m00 << "\t GPU:" << result.s[0] << "\n";
+			std::cout << "m10 CPU:" << m10 << "\t GPU:" << result.s[1] << "\n";
+			std::cout << "m01 CPU:" << m01 << "\t GPU:" << result.s[2] << "\n";
+		}
+#endif
+		// END
+		// MOMENTS		
+		
+		if( fabs(result.s[0]) < DBL_EPSILON )
+			break;
+
+		int dx = cvRound( result.s[1]/result.s[0] - this->trackRect.width*0.5 );
+		int dy = cvRound( result.s[2]/result.s[0] - this->trackRect.height*0.5 );
+
+		int nx = min(max(this->trackRect.x + dx, 0), w - this->trackRect.width);
+		int ny = min(max(this->trackRect.y + dy, 0), h - this->trackRect.height);
+
+		dx = nx - this->trackRect.x;
+		dy = ny - this->trackRect.y;
+		this->trackRect.x = nx;
+		this->trackRect.y = ny;
+
+		if( dx*dx + dy*dy < 4 )
+			break;
 	}
+	delete[] reduction_result_host;
+#ifndef __CS_DEBUG_OFF__
 	delete[] data_img_score;
-
-	if( fabs(mm00) < DBL_EPSILON )
-		return cv::Point(this->trackRect.width/2, this->trackRect.height/2);
-
-	return cv::Point(int(mm10/mm00), int(mm01/mm00));
+#endif
+	// END
+	// MEANSHIFT
 }
+
