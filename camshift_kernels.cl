@@ -8,15 +8,18 @@
 #define HIST_BINS 256
 
 __kernel void RGBA2RG_HIST_IDX_4(
-	__global uint4 * src,
+	__global uint * src,
 	__global uchar4 * dst,
-	uint rgba_width)
+    const uint rect_width, // Szerokosc prostok¹tengo obszaru dla którego obliczamy momenty
+	const uint img_width, // Szerokoœæ ca³ego obrazka
+	const uint offset_x,  // Offset x
+	const uint offset_y  // Offset y
+	)
 {    	
-	const uint idx = get_global_id(0) + get_global_id(1) * rgba_width;	
-	const uint dst_idx = idx - (get_global_offset(0) + get_global_offset(1) * rgba_width + (get_global_id(1)-get_global_offset(1)) * 2 * get_global_offset(0));
-	__global uint * src_uint = (__global uint *) src;
-	uint4 rgba4 = (uint4)(src_uint[idx],src_uint[idx+1],src_uint[idx+2],src_uint[idx+3]);		
+	const uint idx = 4 * (get_global_id(0) + offset_x) + (get_global_id(1)+offset_y) * img_width;
+	const uint dst_idx = get_global_id(0) + get_global_id(1) * rect_width;
 	
+	uint4 rgba4 = (uint4)(src[idx],src[idx+1],src[idx+2],src[idx+3]);
 	// OBLICZAM SUME R+G+B dla ka¿dego pix
 	// dodaje r
 	uint4 r = (rgba4) & MASK_RIGHT_MOST_BYTE_4;
@@ -25,21 +28,22 @@ __kernel void RGBA2RG_HIST_IDX_4(
 	uint4 g = (rgba4 >> 8) & MASK_RIGHT_MOST_BYTE_4;
 	sum_rgb += g;
 	// dodaje b
-	sum_rgb += (rgba4 >> 16) & MASK_RIGHT_MOST_BYTE_4;
-		
+	sum_rgb += ((rgba4 >> 16) & MASK_RIGHT_MOST_BYTE_4);
+			
 	// 16 * g
 	uint4 rg_4 = g * (uint4)(16);
 	// r + 16 * g
 	rg_4 += r;
 	// 15 * (r + 16 * g)
-	rg_4 *= 15;	
+	rg_4 *= (uint4)(15);		
+	rg_4 /= sum_rgb;
 	// Dzielenie, konwersja do uchar4 i zapis
 	// 15*(R+16*G) / (r+g+b)
-	dst[dst_idx] = convert_uchar4_sat(rg_4/sum_rgb);
+	dst[dst_idx] = convert_uchar4_sat(rg_4);
 }
 
 __kernel void RGBA2HistScore(
-	__global uint *  src,
+	__global uint * src,
 	const uint width,
 	__global float * dst,
 	__constant uint * histogram
@@ -50,9 +54,9 @@ __kernel void RGBA2HistScore(
 	uint rgba = src[idx];
 	uint r = (rgba) & MASK_RIGHT_MOST_BYTE;
 	uint g = (rgba >> 8) & MASK_RIGHT_MOST_BYTE;
-	// b = (rgba >> 16) & MASK_RIGHT_MOST_BYTE
+	uint b = (rgba >> 16) & MASK_RIGHT_MOST_BYTE;
 
-	uint hist_idx = ((r + 16 * g)*15)/(r+g+(rgba >> 16) & MASK_RIGHT_MOST_BYTE);
+	uint hist_idx = ((r + 16 * g)*15)/(r+g+b);
 
 	dst[idx] = (float)(histogram[hist_idx]);
 }
@@ -154,17 +158,17 @@ __kernel void moments(
     const uint size, // Rozmiar obszaru dla ktorego obliczamy momenty
     const uint rect_width, // Szerokosc prostok¹tengo obszaru dla którego obliczamy momenty
 	const uint img_width, // Szerokoœæ ca³ego obrazka
-	const uint offset_x,  // Offset x, y 
-	const uint offset_y,  // Offset x, y 
+	const uint offset_x,  // Offset x
+	const uint offset_y,  // Offset y 
     __global float4* result // Wynik czêœciowej redukcji, jeszcze trzeba dokoñczyæ redukcje po stronie hosta
 	) 
 {
     uint rect_idx = get_global_id(0);
-    float4 accumulator = (float4) 0;
+    float4 accumulator = (float4)(0);
 
 	// MOMENTY
 	// START
-	{		
+	{	
 		float frect_width = convert_float(rect_width);
 			
 		// Wspó³rzedne w prostok¹tnym obszarze
@@ -179,7 +183,7 @@ __kernel void moments(
 		// momentów m00, m10, m01.
 		while (rect_idx < size) 
 		{
-			float4 element = m * (float4)img[rect_x + offset_x + (rect_y + offset_y) * img_width];
+			float4 element = m * (float4)(img[rect_x + offset_x + ((rect_y + offset_y) * img_width)]);
 			accumulator += element;
 			rect_idx += get_global_size(0);
     

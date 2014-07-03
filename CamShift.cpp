@@ -35,7 +35,7 @@ CamShift::CamShift(void)
 		this->queue = cl::CommandQueue(context, devices[0], CL_QUEUE_PROFILING_ENABLE);
 
 		this->trackRect = cv::Rect(0, 0, TRACK_RECT_W, TRACK_RECT_H);
-		this->trackRectColor = cvScalar(200, 0, 0);
+		this->trackRectBorderColor = cvScalar(200, 0, 100);
 
 		this->tracking = false;
 
@@ -75,7 +75,13 @@ void CamShift::drawTrackRect(cv::Mat& mat)
 		this->trackRect.x = width/2 - this->trackRect.width/2;
 		this->trackRect.y = height/2 - this->trackRect.height/2;
 	}	
-	cv::rectangle(mat, trackRect, trackRectColor, 2);
+	cv::Rect border = trackRect;
+	int borderWidth = 2;
+	border.x -= borderWidth;
+	border.y -= borderWidth;
+	border.width += 2*borderWidth;
+	border.height += 2*borderWidth;
+	cv::rectangle(mat, border, trackRectBorderColor, borderWidth);
 }
 
 void CamShift::startTracking(cv::Mat& mat)
@@ -87,6 +93,8 @@ void CamShift::startTracking(cv::Mat& mat)
 void CamShift::stopTracking()
 {
 	this->tracking = false;
+	this->trackRect.width = TRACK_RECT_W;
+	this->trackRect.height = TRACK_RECT_H;
 }
 
 void CamShift::getTrackedObjHist(cv::Mat& mat)
@@ -95,7 +103,7 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	int h = mat.rows;
 
 	// ZMIANA BGR -> RGBA
-	cl_uint* dataRGBA = new cl_uint[mat.total()];
+	uchar* dataRGBA = new uchar[mat.total()*4];
 	cv::Mat matRGBA(mat.size(), CV_8UC4, dataRGBA);
 	cv::cvtColor(mat, matRGBA, CV_BGR2RGBA, 4);
 
@@ -114,11 +122,14 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	const int w4 = this->trackRect.width / 4;
 	cl::NDRange global(w4, this->trackRect.height);
 	cl::NDRange local = cl::NullRange;
-	cl::NDRange offset = cl::NDRange(this->trackRect.x/4, this->trackRect.y);
+	cl::NDRange offset = cl::NDRange(0, 0);
 
-	this->kernelRGBA2RG_HIST_IDX_4.setArg(0, sizeof(cl_uint4 *), &in);
+	this->kernelRGBA2RG_HIST_IDX_4.setArg(0, sizeof(cl_uint *), &in);
 	this->kernelRGBA2RG_HIST_IDX_4.setArg(1, sizeof(cl_uchar4 *), &out);
-	this->kernelRGBA2RG_HIST_IDX_4.setArg(2, w/4);
+	this->kernelRGBA2RG_HIST_IDX_4.setArg(2, w4);
+	this->kernelRGBA2RG_HIST_IDX_4.setArg(3, w);
+	this->kernelRGBA2RG_HIST_IDX_4.setArg(4, this->trackRect.x/4);
+	this->kernelRGBA2RG_HIST_IDX_4.setArg(5, this->trackRect.y);
 
 	queue.enqueueNDRangeKernel(this->kernelRGBA2RG_HIST_IDX_4, offset, global, local);
 	queue.finish();
@@ -133,13 +144,18 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	queue.enqueueReadBuffer(out, CL_TRUE, 0, size_rg_bytes, dataRG);
 	// Wypisuje 10 pierwszych wyników przekszta³cenia BGR -> RGBA -> R+16*G(indeks na histogramie 16x16 RxG)
 	// dla rêcznego sprawdzenia poprawnoœci obliczeñ
-	for(int i = 0; i < 0; i++)
+	for(int i = 100; i < 150; i++)
 	{		
 		std::cout << i << "\t Hist idx (RxG): " << int(dataRG[i]) << "\n";
-		std::cout << i+144*640+192 << "RGBA: \t R:" << int(dataRGBA[(i*4)+144*640+192]) << "\t G:" << int(dataRGBA[(i*4)+1+144*640+192])
-			<< "\t B:" << int(dataRGBA[(i*4)+2+144*640+192]) << "\t A:" << int(dataRGBA[(i*4)+3+144*640+192]) << "\n";
-		std::cout << i << "BGR: \t R:" << int(mat.data[(i*3)+2]) << "\t G:" << int(mat.data[(i*3)+1])
-			<< "\t B:" << int(mat.data[(i*3)]) << "\n";		
+		std::cout << i+this->trackRect.y*w+this->trackRect.x
+			<< "\tRGBA: \t R:" << int(matRGBA.data[4*(i+this->trackRect.y*w+this->trackRect.x)])
+			<< "\t G:" << int(matRGBA.data[1+4*(i+this->trackRect.y*w+this->trackRect.x)])
+			<< "\t B:" << int(matRGBA.data[2+4*(i+this->trackRect.y*w+this->trackRect.x)])
+			<< "\t A:" << int(matRGBA.data[3+4*(i+this->trackRect.y*w+this->trackRect.x)]) << "\n";
+		std::cout << i+this->trackRect.y*w+this->trackRect.x 
+			<< "\tBGR: \t R:" << int(mat.data[3*(i+this->trackRect.y*w+this->trackRect.x)+2])
+			<< "\t G:" << int(mat.data[3*(i+this->trackRect.y*w+this->trackRect.x)+1])
+			<< "\t B:" << int(mat.data[3*(i+this->trackRect.y*w+this->trackRect.x)]) << "\n";		
 	}
 	int histCPU[HISTOGRAM_LEVELS];
 	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
@@ -152,6 +168,18 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 		{
 			histCPU[int(dataRG[j + i * this->trackRect.width])]++;
 		}
+	}
+	int maxCPU = 0;
+	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
+	{
+		if(histCPU[i] > maxCPU)
+		{
+			maxCPU = histCPU[i];
+		}
+	}
+	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
+	{
+		histCPU[i] = (histCPU[i] * 255)/maxCPU;
 	}
 
 #endif
@@ -188,28 +216,47 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	// TODO: Przenieœæ to do GPU
 	// Dodane wy³uskanie maksimum
 	int max = 0;
+
 	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
 	{
-		int bin = 0;
-		for(int j = 0; j< nWorkGroups;j++)
+		if(!(i <= 88 && i >= 81))
 		{
-			bin += dataHIST[i + j*HISTOGRAM_LEVELS];
+			int bin = 0;
+			for(int j = 0; j< nWorkGroups;j++)
+			{
+				bin += dataHIST[i + j*HISTOGRAM_LEVELS];
+			}			
+			dataHIST[i] = max(0, bin);
+			if(bin > max)
+			{
+				max = bin;
+			}
 		}
-		dataHIST[i] = bin;
-		if(bin > max)
+		else
 		{
-			max = bin;
+			dataHIST[i] = 0;
 		}
 	}
 
 	// Normalizacja do 255
+	const int fix = 20;
 	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
 	{
 		dataHIST[i] = (dataHIST[i] * 255)/max;
+		if(dataHIST[i] <= fix)
+		{
+			dataHIST[i] = 0;
+		}
+		else
+		{
+			dataHIST[i] -= fix;
+		}
 	}
 
 	// Zapis
 	memcpy(this->trackedObjHist, dataHIST, HISTOGRAM_LEVELS * sizeof(cl_uint));
+	
+
 
 #ifndef __CS_DEBUG_OFF__
 
@@ -232,12 +279,8 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 		{
 			std::cout << i << "\tCPU: " << histCPU[i] << "\tGPU: " << dataHIST[i] << "\n";
 		}
-	} 
-	// Czy liczba przydzielonych "punktów" jest OK
-	if(this->trackRect.width * this->trackRect.height != sumGPU)
-	{
-		std::cout <<  "\t SUM CPU: " << this->trackRect.width * this->trackRect.height << "\t SUM GPU: " << sumGPU << "\n";
 	}
+
 #endif
 }
 
@@ -298,10 +341,12 @@ void CamShift::meanShift(cv::Mat& mat)
 	//MOMENTY GPU USTAWIENIA
 	const int local_scratch_size = 128;
 	const int nWorkGroups = 40;
-	float * reduction_result_host = new float[local_scratch_size * 4];
-	cl::Buffer reduction_result(context, CL_MEM_READ_WRITE, local_scratch_size * nWorkGroups * sizeof(cl_float4));
+	float * reduction_result_host = new float[nWorkGroups * 4];
+	cl::Buffer reduction_result(context, CL_MEM_READ_WRITE, nWorkGroups * sizeof(cl_float4));
+	cl_float4 result;
 
 	const int niters = 100;
+	int s = this->trackRect.width;
 	for( int i = 0; i < niters; i++ )
 	{     
 		this->trackRect.width = max(this->trackRect.width, 1);
@@ -327,8 +372,8 @@ void CamShift::meanShift(cv::Mat& mat)
 
 		queue.enqueueNDRangeKernel(this->kernelMoments, offset, global, local);
 		queue.finish();
-		queue.enqueueReadBuffer(reduction_result, CL_TRUE, 0, local_scratch_size * sizeof(cl_float4), reduction_result_host);
-		cl_float4 result = common::reduceHost(reduction_result_host, 4 * local_scratch_size);		
+		queue.enqueueReadBuffer(reduction_result, CL_TRUE, 0, nWorkGroups * sizeof(cl_float4), reduction_result_host);
+		result = common::reduceHost(reduction_result_host, nWorkGroups * 4);		
 		//END
 		//GPU
 
@@ -361,14 +406,16 @@ void CamShift::meanShift(cv::Mat& mat)
 #endif
 		// END
 		// MOMENTS		
-		
-		// Poprawka rozmiaru
-		//std::cout << "m00: " << 2*sqrt(result.s[0]) << "\n";
-		//std::cout << "s: " << 2*sqrt(result.s[0]/256) << "\n";
-		//std::cout << "s: " << 2*sqrt(result.s[0]/256)/(this->trackRect.height*this->trackRect.width) << "\n";
-		
+
+		// Poprawka rozmiaru		
+		//std::cout << "1.1 s: " << 1.1*sqrt(result.s[0]/255) << "\n";		
+		//std::cout << "2 s: " << 2*sqrt(result.s[0]/255) << "\n";	
+		//std::cout << "1.1 s do 4: " << int((1.1*sqrt(result.s[0]/255))/4.0)*4 << "\n";
+
 		if( fabs(result.s[0]) < DBL_EPSILON )
 			break;
+
+		s = int((1.8*sqrt(result.s[0]/235))/4.0)*4;
 
 		int dx = cvRound( result.s[1]/result.s[0] - this->trackRect.width*0.5 );
 		int dy = cvRound( result.s[2]/result.s[0] - this->trackRect.height*0.5 );
@@ -381,13 +428,22 @@ void CamShift::meanShift(cv::Mat& mat)
 		this->trackRect.x = nx;
 		this->trackRect.y = ny;
 
-		if( dx*dx + dy*dy < 4 )
+		if( dx*dx + dy*dy < DBL_EPSILON*DBL_EPSILON)
 			break;
 	}
 	delete[] reduction_result_host;
 #ifndef __CS_DEBUG_OFF__
 	delete[] data_img_score;
 #endif
+
+	s = max(MIN_TRACK_RECT_W, min(s, MAX_TRACK_RECT_W));
+	int d = (s - this->trackRect.width) / 2;
+	this->trackRect.width = s;
+	this->trackRect.height = s;
+
+	this->trackRect.x = min(max(this->trackRect.x - d, 0), w - this->trackRect.width);
+	this->trackRect.y = min(max(this->trackRect.y - d, 0), h - this->trackRect.height);
+
 	// END
 	// MEANSHIFT
 }

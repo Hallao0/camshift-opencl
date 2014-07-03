@@ -18,6 +18,9 @@
 #define TRACK_RECT_W 128
 #define TRACK_RECT_H 128
 
+#define MIN_TRACK_RECT_W 64
+#define MAX_TRACK_RECT_W 384
+
 #define HISTOGRAM_LEVELS 256
 
 #define __CS_DEBUG_OFF__
@@ -43,7 +46,7 @@ class CamShift
 	
 	/** Tract rect */
 	cv::Rect trackRect;
-	CvScalar trackRectColor;
+	CvScalar trackRectBorderColor;
 
 	/** True if object is being tracked; false otherwise*/
 	bool tracking;

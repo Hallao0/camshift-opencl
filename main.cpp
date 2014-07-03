@@ -40,11 +40,16 @@ int main() {
 		
 		while((key = cvWaitKey(33)) != 27)
 		{
-			while(cvWaitKey(33) != 32)
+			while((key = cvWaitKey(33)) != 32)
 			{
 				stream >> cameraFrame;	
 				camshift.drawTrackRect(cameraFrame);
 				imshow("main", cameraFrame);
+				if(key == 27)
+				{
+					cvDestroyAllWindows();
+					return EXIT_SUCCESS;
+				}
 			}	
 			std::cout << "Tracking started" << std::endl;
 			camshift.startTracking(cameraFrame);	
@@ -77,5 +82,6 @@ int main() {
 	catch (...) {
 		std::cerr << "Unhandled exception of unknown type reached the top of main.\n";		
 	}
+	getchar();
 	return EXIT_FAILURE;
 }
