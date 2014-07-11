@@ -7,6 +7,16 @@
 // 256 kube³ków (16x16)
 #define HIST_BINS 256
 
+// Mapuje wybrany prostok¹t z obrazu 2D RGBA @src
+// na macierz 2D indeksów histogramu RG @dst (16 x 16; indeks jest liczb¹ z zakresu 0 - 255).
+// Ka¿demu pixelowi przyporzadtkowywany jest odpowiedni indeks.
+//
+// Wybrany prostok¹t jest definiowany przez @offset_x @offset_y i @rect_width.
+//
+// !! Z uwagi na to, ¿e przetwarzane s¹ 4 pixele jednoczesnie offset_x i rect_width musz¹ byæ podana jako podzielone przez 4.
+// 
+// Potrzebne do stworzenia histogramu wybranego prostok¹ta z obrazu.
+//
 __kernel void RGBA2RG_HIST_IDX_4(
 	__global uint * src,
 	__global uchar4 * dst,
@@ -36,12 +46,17 @@ __kernel void RGBA2RG_HIST_IDX_4(
 	rg_4 += r;
 	// 15 * (r + 16 * g)
 	rg_4 *= (uint4)(15);		
+	// 15*(R+16*G) / (r+g+b)	
 	rg_4 /= sum_rgb;
-	// Dzielenie, konwersja do uchar4 i zapis
-	// 15*(R+16*G) / (r+g+b)
+	// konwersja do uchar4 i zapis
 	dst[dst_idx] = convert_uchar4_sat(rg_4);
 }
 
+// Mapowanie obrazu 2D RGBA @src na wartoœci z odpowiednich
+// "kube³ków"/indeksów histogramu @histogram (16 x 16).
+//
+// Wartoœci zapisywane s¹ jako float w @dst ze wzglêdu na dalsze
+// obliczenia (obliczenie momentów).
 __kernel void RGBA2HistScore(
 	__global uint * src,
 	const uint width,
@@ -51,6 +66,7 @@ __kernel void RGBA2HistScore(
 {
 	uint idx = get_global_id(0) + get_global_id(1) * width;	
 
+	// Ustalenie indeksu histogramuu
 	uint rgba = src[idx];
 	uint r = (rgba) & MASK_RIGHT_MOST_BYTE;
 	uint g = (rgba >> 8) & MASK_RIGHT_MOST_BYTE;
@@ -58,6 +74,7 @@ __kernel void RGBA2HistScore(
 
 	uint hist_idx = ((r + 16 * g)*15)/(r+g+b);
 
+	// Wpisanie wartoœci z pod odpowiedniego indeksu
 	dst[idx] = (float)(histogram[hist_idx]);
 }
 
@@ -69,6 +86,18 @@ __kernel void RGBA2HistScore(
 #define NBANKS 16
 #define BITS_PER_VALUE 8
 
+// Oblicza histogram RG (16 x 16) @srcRG.
+// 
+// Algorytm dzia³a nastêpuj¹co: 
+// *1 Ka¿dy work-group ma NBANKS histogramów lokalnych (¿eby nie by³o problemów z konfilktami do pamiêci lokalnej)
+// * Jeden work-item przetwarza 16 razy @n4VectorsPerWorkItem wartoœci z @srcRG zwiêkszaj¹c wartoœc odpowiednich kube³ków histogramu 
+// (16 razy @n4VectorsPerWorkItem bo jedna wartoœæ jest 8-bitowa a wczytujemy wektory uint4, czyli 16 8-bitowych wartoœci, i ka¿dy work-item wczytuje 
+// @n4VectorsPerWorkItem wektorów uint4).
+// * Na koñcu work-itemy sumuj¹ 16 histogramów do jednego i zapisuj¹ w globalHistRG (szczegó³y ni¿ej)
+// * W globalHistRG jest ostatecznie tyle histogramów ile jest work-group, sumowanie ostateczne jest po stronie hosta
+// 
+// Work-group powienien byæ wielkoœci histogramu.
+//
 __kernel __attribute__((reqd_work_group_size(HIST_BINS,1,1)))
 void histRG(
 	__global uint4 * srcRG,
@@ -136,8 +165,8 @@ void histRG(
     }
     barrier( CLK_LOCAL_MEM_FENCE );
 	
-	// Sumuje 16 lokalnych histogramów w jeden histogram dla ca³ej workGroup
-	// Sumuje tak, ze ka¿dy z 256 w¹tków sumuje po jednym "kube³ku"(?) histogramu
+	// Sumuje 16 lokalnych histogramów w jeden histogram dla ca³ej work-group
+	// Sumuje tak, ze ka¿dy z 256 w¹tków sumuje po jednym "kube³ku"/indeksie histogramu
 	for(uint binIdx = lid; binIdx < HIST_BINS; binIdx += localWorkItems)
 	{
 		uint bin = 0;
@@ -148,6 +177,7 @@ void histRG(
 		globalHistRG[(get_group_id(0) * HIST_BINS) + binIdx] = bin;
 	}	 
 }
+
 
 /**
 * Oblicza momenty m00, m10, m01 dla prostok¹tnego obszaru wewn¹trz podanego obrazu.

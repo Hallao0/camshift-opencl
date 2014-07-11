@@ -43,7 +43,7 @@ class CamShift
 
 	cl::CommandQueue queue;
 	/** OpenCL: End*/
-	
+
 	/** Tract rect */
 	cv::Rect trackRect;
 	CvScalar trackRectBorderColor;
@@ -51,7 +51,7 @@ class CamShift
 	/** True if object is being tracked; false otherwise*/
 	bool tracking;
 	cl_uint trackedObjHist[256];
-	
+
 public:
 	CamShift(void);
 	~CamShift(void);
@@ -63,7 +63,8 @@ public:
 
 private:
 	void getTrackedObjHist(cv::Mat& mat);
-	void meanShift(cv::Mat& mat);
+	int  meanShift(cv::Mat& mat);
+	void resizeTrackRect(cv::Mat& mat, const int resize_rate);
 	void clean();
 };
 

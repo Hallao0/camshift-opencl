@@ -99,7 +99,9 @@ void CamShift::stopTracking()
 
 void CamShift::getTrackedObjHist(cv::Mat& mat)
 {
+	// Img width
 	int w = mat.cols;
+	// Img height
 	int h = mat.rows;
 
 	// ZMIANA BGR -> RGBA
@@ -107,16 +109,17 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	cv::Mat matRGBA(mat.size(), CV_8UC4, dataRGBA);
 	cv::cvtColor(mat, matRGBA, CV_BGR2RGBA, 4);
 
-	// ZMIANA RGBA -> RG
-	int size_rgba_bytes = w*h*sizeof(cl_uchar4);
-	int size_rg_bytes = this->trackRect.width * this->trackRect.height * sizeof(cl_uchar);
+	// ZMIANA RGBA -> RB Histogram indeks
+	// START
+	int size_img_rgba_bytes = w*h*sizeof(cl_uchar4);
+	int size_rect_rg_bytes = this->trackRect.width * this->trackRect.height * sizeof(cl_uchar);
 
-	cl::Buffer in(context, CL_MEM_READ_ONLY, size_rgba_bytes);
-	cl::Buffer out(context, CL_MEM_READ_WRITE, size_rg_bytes);
+	cl::Buffer img(context, CL_MEM_READ_ONLY, size_img_rgba_bytes);
+	cl::Buffer out(context, CL_MEM_READ_WRITE, size_rect_rg_bytes);
 
-	queue.enqueueWriteBuffer(in, CL_TRUE, 0, size_rgba_bytes, matRGBA.data);
+	queue.enqueueWriteBuffer(img, CL_TRUE, 0, size_img_rgba_bytes, matRGBA.data);
 
-	// Szerokoœæ zmniejszamy o 4 bo kernel analizuje po 4 jednoczeœnie
+	// Szerokoœæ zmniejszamy 4-krotnie bo kernel analizuje po 4 jednoczeœnie
 	// Liczba pikseli musi byæ podzielna przez 4, no ale ka¿da szanuj¹ca siê
 	// rozdzielczoœæ spe³nia ten warunek.
 	const int w4 = this->trackRect.width / 4;
@@ -124,7 +127,7 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	cl::NDRange local = cl::NullRange;
 	cl::NDRange offset = cl::NDRange(0, 0);
 
-	this->kernelRGBA2RG_HIST_IDX_4.setArg(0, sizeof(cl_uint *), &in);
+	this->kernelRGBA2RG_HIST_IDX_4.setArg(0, sizeof(cl_uint *), &img);
 	this->kernelRGBA2RG_HIST_IDX_4.setArg(1, sizeof(cl_uchar4 *), &out);
 	this->kernelRGBA2RG_HIST_IDX_4.setArg(2, w4);
 	this->kernelRGBA2RG_HIST_IDX_4.setArg(3, w);
@@ -133,6 +136,7 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 
 	queue.enqueueNDRangeKernel(this->kernelRGBA2RG_HIST_IDX_4, offset, global, local);
 	queue.finish();
+	// END
 
 #ifndef __CS_DEBUG_OFF__
 
@@ -186,10 +190,10 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 
 	const int workGroupSize = HISTOGRAM_LEVELS;
 	const int n4VectorsPerWorkItem = 1;
-	// Rozmiar pix to jeden bajt
-	// Wczytujemy jednoczeœnie 4 int'y, zatem 16 bajtów
+	// Rozmiar pix to jeden bajt.
+	// Wczytujemy jednoczeœnie 4 int'y, zatem 16 bajtów.
 	const int n4Vectors = this->trackRect.width * this->trackRect.height / 16;
-	// rozmiar: liczba wektorów uint4 przez liczbe wektorów na workItem
+	// Rozmiar: liczba wektorów uint4 przez liczbe wektorów na workItem
 	const int globalSize = n4Vectors/n4VectorsPerWorkItem;
 	const int nWorkGroups = (globalSize / workGroupSize);
 
@@ -212,14 +216,14 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	cl_uint* dataHIST = new cl_uint[nWorkGroups * HISTOGRAM_LEVELS];
 	queue.enqueueReadBuffer(globalHist, CL_TRUE, 0, size_global_rg_hist_bytes, dataHIST);
 
-	// Redukcja do jednego histogramu
-	// TODO: Przenieœæ to do GPU
-	// Dodane wy³uskanie maksimum
-	int max = 0;
+	// TODO: Przenieœc do oddzielnej metody/metod (START, END)
+	// START
 
+	// Redukcja do jednego histogramu + maksimum dla normalizacji.
+	int max = 0;
 	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
 	{
-		if(!(i <= 88 && i >= 81))
+		if(!(i <= 88 && i >= 81)) // Indeksy które odpowiadaj¹ odcieniom szaroœci s¹ pomijane.
 		{
 			int bin = 0;
 			for(int j = 0; j< nWorkGroups;j++)
@@ -239,6 +243,10 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 	}
 
 	// Normalizacja do 255
+
+	// Dodatkowy fix histogramu.
+	// Wszystkie wartoœci mniejsze od fix s¹ sprowadzane do zera.
+	// Eliminujemy szumy tym samym niepotrzebne szumy, nieznaczne kolory.
 	const int fix = 20;
 	for(int i = 0; i < HISTOGRAM_LEVELS; i++)
 	{
@@ -247,16 +255,11 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 		{
 			dataHIST[i] = 0;
 		}
-		else
-		{
-			dataHIST[i] -= fix;
-		}
 	}
+	// END
 
 	// Zapis
 	memcpy(this->trackedObjHist, dataHIST, HISTOGRAM_LEVELS * sizeof(cl_uint));
-	
-
 
 #ifndef __CS_DEBUG_OFF__
 
@@ -287,7 +290,8 @@ void CamShift::getTrackedObjHist(cv::Mat& mat)
 void CamShift::process(cv::Mat& mat)
 {
 	try {
-		meanShift(mat);
+		int s = meanShift(mat);
+		resizeTrackRect(mat, s);
 		drawTrackRect(mat);
 	} catch(...)
 	{
@@ -295,17 +299,29 @@ void CamShift::process(cv::Mat& mat)
 	}
 }
 
-void CamShift::meanShift(cv::Mat& mat)
+void CamShift::resizeTrackRect(cv::Mat& mat, int resize_rate)
 {
 	const int w = mat.cols;
 	const int h = mat.rows;
+	
+	int s = max(MIN_TRACK_RECT_W, min(resize_rate, MAX_TRACK_RECT_W));
+	int d = (s - this->trackRect.width) / 2;
+	this->trackRect.width = s;
+	this->trackRect.height = s;
 
+	this->trackRect.x = min(max(this->trackRect.x - d, 0), w - this->trackRect.width);
+	this->trackRect.y = min(max(this->trackRect.y - d, 0), h - this->trackRect.height);
+}
+
+int CamShift::meanShift(cv::Mat& mat)
+{
+	const int w = mat.cols;
+	const int h = mat.rows;
 
 	// RGBA to Histogram Score
 	// START
 
 	// ZMIANA BGR -> RGBA
-
 	cl_uint * dataRGBA = new cl_uint[mat.total()];
 	cv::Mat matRGBA(mat.size(), CV_8UC4, dataRGBA);
 	cv::cvtColor(mat, matRGBA, CV_BGR2RGBA, 4);
@@ -407,14 +423,10 @@ void CamShift::meanShift(cv::Mat& mat)
 		// END
 		// MOMENTS		
 
-		// Poprawka rozmiaru		
-		//std::cout << "1.1 s: " << 1.1*sqrt(result.s[0]/255) << "\n";		
-		//std::cout << "2 s: " << 2*sqrt(result.s[0]/255) << "\n";	
-		//std::cout << "1.1 s do 4: " << int((1.1*sqrt(result.s[0]/255))/4.0)*4 << "\n";
-
 		if( fabs(result.s[0]) < DBL_EPSILON )
 			break;
 
+		// Zmienna potrzebna do zmiany rozmiaru okna
 		s = int((1.8*sqrt(result.s[0]/235))/4.0)*4;
 
 		int dx = cvRound( result.s[1]/result.s[0] - this->trackRect.width*0.5 );
@@ -435,16 +447,8 @@ void CamShift::meanShift(cv::Mat& mat)
 #ifndef __CS_DEBUG_OFF__
 	delete[] data_img_score;
 #endif
-
-	s = max(MIN_TRACK_RECT_W, min(s, MAX_TRACK_RECT_W));
-	int d = (s - this->trackRect.width) / 2;
-	this->trackRect.width = s;
-	this->trackRect.height = s;
-
-	this->trackRect.x = min(max(this->trackRect.x - d, 0), w - this->trackRect.width);
-	this->trackRect.y = min(max(this->trackRect.y - d, 0), h - this->trackRect.height);
-
 	// END
 	// MEANSHIFT
+	return s;
 }
 
